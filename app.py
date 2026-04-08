@@ -6,10 +6,10 @@ from flask import Flask, render_template_string, request
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'laziji-whisper-pro-v11'
+app.config['SECRET_KEY'] = 'laziji-ultimate-sync-v13'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# 后端数据存储
+# 服务器端内存存储
 state = {
     "public_boxes": [""],
     "whispers": {}, # 存储格式 {"名字A|名字B": "内容"}
@@ -30,7 +30,7 @@ HTML_TEMPLATE = """
         .header h1 { color: #e63946; text-align: center; font-size: 22px; margin-bottom: 20px; }
         .toolbar { display: flex; gap: 10px; margin-bottom: 20px; position: sticky; top: 10px; background: rgba(255,255,255,0.9); backdrop-filter: blur(8px); padding: 12px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.05); z-index: 100; }
         
-        button { padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; }
+        button { padding: 8px 14px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; font-size: 13px; transition: 0.2s; }
         .btn-add { background: #2a9d8f; color: white; }
         .btn-clear { background: #264653; color: white; }
         
@@ -38,12 +38,12 @@ HTML_TEMPLATE = """
         .whisper-card { border: 2px dashed #e76f51; background: #fffcfb; }
         .card-title { font-weight: bold; color: #555; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 14px; }
         
-        textarea { width: 100%; height: 160px; border: 1px solid #ddd; border-radius: 8px; padding: 12px; font-size: 16px; box-sizing: border-box; outline: none; background: #fafafa; line-height: 1.6; transition: border 0.2s; }
+        textarea { width: 100%; height: 160px; border: 1px solid #ddd; border-radius: 8px; padding: 12px; font-size: 16px; box-sizing: border-box; outline: none; background: #fafafa; line-height: 1.6; }
         textarea:focus { border-color: #2a9d8f; background: white; }
         
         .footer { position: fixed; bottom: 0; left: 0; right: 0; background: white; padding: 15px 20px; border-top: 1px solid #eee; display: flex; align-items: center; gap: 10px; overflow-x: auto; z-index: 1000; }
-        .user-chip { background: #e9ecef; padding: 6px 14px; border-radius: 20px; font-size: 13px; white-space: nowrap; cursor: pointer; border: 1px solid transparent; }
-        .user-chip:hover { border-color: #e76f51; color: #e76f51; }
+        .user-chip { background: #e9ecef; padding: 6px 14px; border-radius: 20px; font-size: 13px; white-space: nowrap; cursor: pointer; }
+        .user-chip:hover { background: #dee2e6; color: #e76f51; }
     </style>
 </head>
 <body>
@@ -63,12 +63,12 @@ HTML_TEMPLATE = """
     <script>
         const socket = io();
         let myName = "";
-        let isComposing = false; // 中文输入法锁定
+        let isComposing = false; // 标记中文输入法状态
         while(!myName || myName.trim() === "") { myName = prompt("请输入你的名字:"); }
         
         socket.on('connect', () => { socket.emit('user_join', { name: myName }); });
 
-        // 仅在结构变化（增减框）时执行重绘
+        // 仅在结构（框的数量或对象）变化时重绘页面
         socket.on('sync_structure', (data) => {
             const container = document.getElementById('box-container');
             const currentIds = Array.from(container.querySelectorAll('textarea')).map(t => t.id).sort().join(',');
@@ -83,6 +83,7 @@ HTML_TEMPLATE = """
             }
             const newIds = newIdsArr.sort().join(',');
 
+            // 只有当框的数量或归属发生变化时，才更新DOM
             if (currentIds !== newIds) {
                 container.innerHTML = '';
                 // 渲染公共区
@@ -102,13 +103,13 @@ HTML_TEMPLATE = """
             const div = document.createElement('div');
             div.className = 'card' + (type === 'whi' ? ' whisper-card' : '');
             
-            const clearCmd = type === 'pub' ? `socket.emit('manage_box', {action:'clear_single', index:${id}})` : `socket.emit('whisper_action', {target:'${id}', action:'clear'})`;
+            const clearAction = type === 'pub' ? `socket.emit('manage_box', {action:'clear_single', index:${id}})` : `socket.emit('whisper_action', {target:'${id}', action:'clear'})`;
             const closeBtn = type === 'whi' ? `<button style="background:#666; color:white; font-size:10px; margin-left:5px;" onclick="socket.emit('whisper_action', {target:'${id}', action:'close'})">关闭</button>` : '';
 
             div.innerHTML = `
                 <div class="card-title">
                     <span>${title}</span>
-                    <div><button style="background:#ddd; font-size:10px;" onclick="${clearCmd}">清空</button>${closeBtn}</div>
+                    <div><button style="background:#ddd; font-size:10px;" onclick="${clearAction}">清空</button>${closeBtn}</div>
                 </div>
                 <textarea id="${type}-${id}" 
                     oncompositionstart="isComposing=true"
@@ -123,12 +124,12 @@ HTML_TEMPLATE = """
         }
 
         function handleGlobalClear() {
-            if(confirm('确定清空你能看到的所有公共区和私聊框吗？')) {
+            if(confirm('确定清空你能看到的所有公共区和私聊吗？')) {
                 socket.emit('manage_box', {action: 'clear_visible_all'});
             }
         }
 
-        // 核心丝滑逻辑：仅更新内容，不重绘DOM
+        // 统一的内容同步逻辑：不重绘，只改value，保护光标
         socket.on('update_content', (data) => {
             const el = document.getElementById(`${data.type}-${data.id}`);
             if (el && document.activeElement !== el) {
@@ -168,8 +169,7 @@ def sync_struct():
 @socketio.on('user_join')
 def handle_join(data):
     state["users"][request.sid] = {"name": data.get('name', '匿名')}
-    if "global_cleanup" in state["cleanup_timers"]:
-        state["cleanup_timers"]["global_cleanup"].cancel()
+    if "global_cleanup" in state["cleanup_timers"]: state["cleanup_timers"]["global_cleanup"].cancel()
     sync_struct()
 
 @socketio.on('disconnect')
@@ -179,7 +179,6 @@ def handle_disconnect():
     name = user['name']
     del state["users"][request.sid]
     
-    # 私聊延迟销毁
     def cleanup():
         active = [u['name'] for u in state["users"].values()]
         changed = False
@@ -190,7 +189,6 @@ def handle_disconnect():
         if changed: sync_struct()
     threading.Timer(30.0, cleanup).start()
 
-    # 全员退出延迟清零
     if not state["users"]:
         t = threading.Timer(60.0, lambda: state.update({"public_boxes": [""], "whispers": {}}))
         state["cleanup_timers"]["global_cleanup"] = t
@@ -210,7 +208,7 @@ def handle_whisper(data):
     target = data['target']
     key = "|".join(sorted([me, target]))
     state["whispers"][key] = data['text']
-    # 精准通知私聊双方，不重绘DOM
+    # 核心修复：私聊打字只发送内容更新指令，绝不触发结构同步
     for sid, info in state["users"].items():
         if info['name'] == target:
             socketio.emit('update_content', {'type': 'whi', 'id': me, 'text': data['text']}, room=sid)
@@ -222,28 +220,34 @@ def handle_whisper_action(data):
     me = state["users"][request.sid]['name']
     target = data['target']
     key = "|".join(sorted([me, target]))
-    if data['action'] == 'open':
-        state["whispers"].setdefault(key, "")
+    if data['action'] == 'open': state["whispers"].setdefault(key, "")
     elif data['action'] == 'clear':
         state["whispers"][key] = ""
-        # 特殊处理：清空时为了让双方UI同步置空内容，直接触发内容更新指令
-        socketio.emit('update_content', {'type': 'whi', 'id': me, 'text': ""}, broadcast=True) # 这里由于结构较多，简单触发全量同步内容
-    elif data['action'] == 'close':
-        state["whispers"].pop(key, None)
+        # 强制清空私聊双方的显示
+        for sid, info in state["users"].items():
+            if info['name'] in [me, target]:
+                other = target if info['name'] == me else me
+                socketio.emit('update_content', {'type': 'whi', 'id': other, 'text': ""}, room=sid)
+    elif data['action'] == 'close': state["whispers"].pop(key, None)
     sync_struct()
 
 @socketio.on('manage_box')
 def handle_manage(data):
     me = state["users"][request.sid]['name']
-    if data['action'] == 'add':
+    if data['action'] == 'add': 
         state["public_boxes"].append("")
     elif data['action'] == 'clear_visible_all':
+        # 仅清除公共区和自己参与的私聊
         state["public_boxes"] = ["" for _ in state["public_boxes"]]
         for k in list(state["whispers"].keys()):
             if me in k.split('|'): state["whispers"][k] = ""
+        # 全清需要触发结构同步以重置所有人的输入框显示
+        socketio.emit('sync_structure', {"public_boxes": state["public_boxes"], "whispers": state["whispers"]})
     elif data['action'] == 'clear_single':
         idx = int(data['index'])
-        if idx < len(state["public_boxes"]): state["public_boxes"][idx] = ""
+        if idx < len(state["public_boxes"]):
+            state["public_boxes"][idx] = ""
+            socketio.emit('update_content', {'type': 'pub', 'id': idx, 'text': ""}, broadcast=True)
     sync_struct()
 
 if __name__ == "__main__":
