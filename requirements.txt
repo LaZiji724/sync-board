@@ -1,4 +1,4 @@
-Flask
-Flask-SocketIO
-eventlet
+flask
+flask-socketio
+gevent
 gunicorn
