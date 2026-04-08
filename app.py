@@ -1,98 +1,118 @@
 import eventlet
-eventlet.monkey_patch()  # 必须放在最开头，解决多线程补丁报错
+eventlet.monkey_patch()
 
 import os
 from flask import Flask, render_template_string
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'secret-sync-key'
-# 强制使用 eventlet 模式以确保实时同步稳定
+app.config['SECRET_KEY'] = 'sync-pro-2026'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 
-# 全局状态，存储在内存中
-state = {
-    "boxes": [""]  # 初始一个框
-}
+# 存储各框的内容
+state = {"boxes": [""]}
 
-# 这里的 HTML 保持了你之前的专业样式
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
 <head>
-    <title>私人云端同步板</title>
+    <title>实名多端同步板</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
     <style>
-        body { font-family: 'Segoe UI', system-ui, sans-serif; margin: 0; padding: 20px; background: #f8f9fa; color: #333; }
-        .container { max-width: 900px; margin: 0 auto; }
+        body { font-family: 'Segoe UI', sans-serif; margin: 0; padding: 20px; background: #f0f2f5; }
+        .container { max-width: 800px; margin: 0 auto; }
         .toolbar { 
             display: flex; gap: 10px; margin-bottom: 20px; position: sticky; top: 10px; 
-            background: white; padding: 15px; border-radius: 12px; 
-            box-shadow: 0 4px 12px rgba(0,0,0,0.08); z-index: 100;
+            background: white; padding: 12px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
-        button { 
-            padding: 8px 16px; border: none; border-radius: 6px; cursor: pointer; 
-            font-weight: 600; transition: all 0.2s;
+        button { padding: 8px 15px; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; }
+        .btn-add { background: #007bff; color: white; }
+        .btn-clear { background: #6c757d; color: white; }
+        .box-card { background: white; padding: 15px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #ddd; }
+        textarea { 
+            width: 100%; height: 200px; border: 1px solid #ccc; border-radius: 5px; 
+            padding: 10px; font-size: 15px; line-height: 1.5; box-sizing: border-box; resize: vertical;
         }
-        .btn-add { background: #28a745; color: white; }
-        .btn-del { background: #dc3545; color: white; }
-        .btn-clear { background: #343a40; color: white; }
-        .box-wrapper { 
-            background: white; padding: 18px; border-radius: 10px; 
-            margin-bottom: 20px; box-shadow: 0 2px 8px rgba(0,0,0,0.04); border: 1px solid #eee;
-        }
-        textarea {
-            width: 100%; height: 160px; padding: 12px; border: 1px solid #dee2e6;
-            border-radius: 6px; font-size: 16px; box-sizing: border-box; outline: none;
-        }
-        .status { font-size: 12px; text-align: center; color: #adb5bd; margin-top: 20px; }
+        .user-tag { color: #007bff; font-size: 12px; margin-bottom: 5px; display: block; }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="toolbar">
-            <button class="btn-add" onclick="manage('add')">＋ 增加框</button>
-            <button class="btn-del" onclick="manage('remove')">－ 减少框</button>
-            <button class="btn-clear" onclick="manage('clear_all')">🗑️ 全员清屏</button>
+            <button class="btn-add" onclick="socket.emit('manage_box', {action:'add'})">＋ 增加同步区</button>
+            <button class="btn-clear" onclick="confirm('确定清空所有内容吗？') && socket.emit('manage_box', {action:'clear_all'})">🗑️ 全员清屏</button>
         </div>
         <div id="editor-container"></div>
-        <div class="status" id="status">正在检查云端同步状态...</div>
     </div>
 
     <script>
         const socket = io();
-        const container = document.getElementById('editor-container');
-        const status = document.getElementById('status');
+        let userName = "";
+
+        // 进入页面强制要求输入名字
+        while(!userName || userName.trim() === "") {
+            userName = prompt("请输入你的名字 (用于发言标记):");
+        }
 
         socket.on('sync_all', function(data) {
+            const container = document.getElementById('editor-container');
             container.innerHTML = '';
             data.boxes.forEach((content, index) => {
-                const wrapper = document.createElement('div');
-                wrapper.className = 'box-wrapper';
-                wrapper.innerHTML = `
-                    <div style="margin-bottom:10px; color:#666; font-weight:bold;">同步区 #${index + 1}</div>
-                    <textarea id="textarea-${index}" oninput="sendUpdate(${index}, this.value)">${content}</textarea>
+                const card = document.createElement('div');
+                card.className = 'box-card';
+                card.innerHTML = `
+                    <span class="user-tag">正在以 [${userName}] 的身份输入...</span>
+                    <textarea id="box-${index}" onkeydown="handleKey(event, ${index})" placeholder="输入内容点击发送...">${content}</textarea>
+                    <div style="text-align:right; margin-top:5px;">
+                        <small style="color:#999">按回车(Enter)发送新消息</small>
+                    </div>
                 `;
-                container.appendChild(wrapper);
+                container.appendChild(card);
             });
         });
 
-        socket.on('update_box', function(data) {
-            const el = document.getElementById('textarea-' + data.index);
-            if (el && el.value !== data.text) {
-                const start = el.selectionStart;
-                const end = el.selectionEnd;
-                el.value = data.text;
-                el.setSelectionRange(start, end);
+        // 接收新消息追加
+        socket.on('append_text', function(data) {
+            const el = document.getElementById('box-' + data.index);
+            if (el) {
+                const prefix = `\\n[${data.user}]: `;
+                // 如果是空的，就不加换行符
+                const finalMsg = el.value === "" ? `[${data.user}]: ${data.text}` : `${el.value}\\n[${data.user}]: ${data.text}`;
+                el.value = finalMsg;
+                el.scrollTop = el.scrollHeight; // 滚动到底部
             }
         });
 
-        function sendUpdate(index, text) { socket.emit('text_change', {index: index, text: text}); }
-        function manage(action) { socket.emit('manage_box', {action: action}); }
+        function handleKey(e, index) {
+            // 当按下回车键时发送，避免多人冲突
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const text = e.target.value.split('\\n').pop(); // 简易逻辑：只拿最后一行尝试
+                // 这里我们直接弹窗输入模式不太友好，改为整段提交模式
+                // 但为了满足你的“不可删除前缀”和“防冲突”，我们采取“回车即发送”的模式
+                const inputVal = e.target.value;
+                // 我们把当前输入框最后一行的内容提取出来（去掉可能已有的前缀）
+                const lines = inputVal.split('\\n');
+                let currentInput = lines[lines.length - 1];
+                
+                if (currentInput.trim() !== "") {
+                    socket.emit('send_msg', {
+                        index: index,
+                        user: userName,
+                        text: currentInput
+                    });
+                    // 发送后清空当前输入行（模拟聊天室感）或保持。这里采取直接广播模式。
+                }
+            }
+        }
+        
+        // 核心：实时同步逻辑改为“追加消息”
+        socket.on('update_box', function(data) {
+            const el = document.getElementById('box-' + data.index);
+            if(el) { el.value = data.full_text; }
+        });
 
-        socket.on('connect', () => { status.innerText = "🟢 云端同步已就绪"; status.style.color = "#28a745"; });
-        socket.on('disconnect', () => { status.innerText = "🔴 同步连接中断"; status.style.color = "#dc3545"; });
     </script>
 </body>
 </html>
@@ -106,25 +126,34 @@ def index():
 def handle_connect():
     emit('sync_all', state)
 
-@socketio.on('text_change')
-def handle_text_change(data):
+@socketio.on('send_msg')
+def handle_message(data):
     idx = data['index']
+    user = data['user']
+    content = data['text']
+    
     if idx < len(state["boxes"]):
-        state["boxes"][idx] = data['text']
-        emit('update_box', data, broadcast=True, include_self=False)
+        prefix = f"[{user}]: "
+        # 构造新的一行
+        new_line = f"{prefix}{content}"
+        
+        if state["boxes"][idx] == "":
+            state["boxes"][idx] = new_line
+        else:
+            state["boxes"][idx] += f"\\n{new_line}"
+            
+        # 广播给所有人完整内容（包含你刚发的那行）
+        emit('update_box', {'index': idx, 'full_text': state["boxes"][idx]}, broadcast=True)
 
 @socketio.on('manage_box')
 def handle_management(data):
     action = data['action']
     if action == 'add':
         state["boxes"].append("")
-    elif action == 'remove' and len(state["boxes"]) > 1:
-        state["boxes"].pop()
     elif action == 'clear_all':
         state["boxes"] = ["" for _ in state["boxes"]]
     emit('sync_all', state, broadcast=True)
 
 if __name__ == "__main__":
-    # Render 会自动通过环境变量 PORT 告诉我们该用哪个端口
     port = int(os.environ.get("PORT", 5000))
     socketio.run(app, host="0.0.0.0", port=port)
