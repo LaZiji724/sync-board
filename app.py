@@ -1,13 +1,14 @@
 import eventlet
-eventlet.monkey_patch()
+eventlet.monkey_patch() # 必须在最顶行
 
 import os, threading, time
 from flask import Flask, render_template_string, request
 from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'laziji-fix-pro-v14'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+app.config['SECRET_KEY'] = 'laziji-ultra-v15'
+# 允许跨域，禁用延迟
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet', ping_timeout=10, ping_interval=5)
 
 state = {
     "public_boxes": [""],
@@ -55,7 +56,7 @@ HTML_TEMPLATE = """
         const socket = io();
         let myName = "";
         let isComposing = false;
-        let lastInputTime = 0; // 上次输入的时间戳
+        let lastInputTime = 0; 
         
         while(!myName || myName.trim() === "") { myName = prompt("请输入你的名字:"); }
         socket.on('connect', () => { socket.emit('user_join', { name: myName }); });
@@ -63,9 +64,7 @@ HTML_TEMPLATE = """
         socket.on('sync_structure', (data) => {
             const container = document.getElementById('box-container');
             container.innerHTML = '';
-            // 渲染公共区
             data.public_boxes.forEach((content, i) => createBox(container, `公共区 ${i+1}`, 'pub', i, content));
-            // 渲染私聊区
             for (let key in data.whispers) {
                 if (key.includes(myName)) {
                     const other = key.split('|').find(n => n !== myName) || myName;
@@ -91,7 +90,7 @@ HTML_TEMPLATE = """
 
         function handleInput(type, id, val) {
             if (isComposing) return;
-            lastInputTime = Date.now(); // 更新最后输入时间
+            lastInputTime = Date.now();
             if(type === 'pub') socket.emit('text_change', {index: id, text: val});
             else socket.emit('whisper_send', {target: id, text: val});
         }
@@ -104,15 +103,17 @@ HTML_TEMPLATE = """
             const el = document.getElementById(`${data.type}-${data.id}`);
             if (!el) return;
             
-            // 解决“莫名英文”核心逻辑：
-            // 如果我正在打字（或刚打完 500ms 内），拒绝服务器任何针对该框的同步
-            if (document.activeElement === el && (isComposing || Date.now() - lastInputTime < 500)) return;
+            // 关键：如果是清屏指令（内容为空），强制覆盖，不管是否在输入
+            const isClearCmd = (data.text === "");
             
-            // 只有当服务器数据确实不同，且我没在操作它时，才更新
+            if (!isClearCmd) {
+                if (document.activeElement === el && (isComposing || Date.now() - lastInputTime < 800)) return;
+            }
+            
             if (el.value !== data.text) {
                 const start = el.selectionStart, end = el.selectionEnd;
                 el.value = data.text;
-                if(document.activeElement === el) el.setSelectionRange(start, end);
+                if(document.activeElement === el && !isClearCmd) el.setSelectionRange(start, end);
             }
         });
 
@@ -170,21 +171,32 @@ def handle_whisper_action(data):
     target = data['target']
     key = "|".join(sorted([me, target]))
     if data['action'] == 'open': state["whispers"].setdefault(key, "")
-    elif data['action'] == 'clear': state["whispers"][key] = ""
+    elif data['action'] == 'clear':
+        state["whispers"][key] = ""
+        # 强制同步空内容给私聊双方
+        for sid, info in state["users"].items():
+            if info['name'] == target:
+                socketio.emit('update_content', {'type': 'whi', 'id': me, 'text': ""}, room=sid)
+            elif info['name'] == me:
+                socketio.emit('update_content', {'type': 'whi', 'id': target, 'text': ""}, room=sid)
     sync_struct()
 
 @socketio.on('manage_box')
 def handle_manage(data):
     me = state["users"][request.sid]['name']
-    if data['action'] == 'add': state["public_boxes"].append("")
+    if data['action'] == 'add': 
+        state["public_boxes"].append("")
     elif data['action'] == 'clear_visible_all':
         state["public_boxes"] = ["" for _ in state["public_boxes"]]
         for k in list(state["whispers"].keys()):
             if me in k: state["whispers"][k] = ""
+        # 全局清空后必须强制广播 update_content
+        socketio.emit('update_content', {'type': 'pub', 'id': 'all', 'text': ""}) # 触发前端全局清理逻辑
     elif data['action'] == 'clear_single':
         idx = int(data['index'])
         state["public_boxes"][idx] = ""
-    sync_struct() # 统一重绘保证同步
+        socketio.emit('update_content', {'type': 'pub', 'id': idx, 'text': ""}, broadcast=True)
+    sync_struct()
 
 if __name__ == "__main__":
     socketio.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
